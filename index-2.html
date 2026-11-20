@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Higher Lower Game</title>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<style>
+  body { margin: 0; background: #1e1e1e; color: #f0f0f0; font-family: Menlo, Consolas, "Courier New", monospace; }
+  header { padding: 18px 20px; color: #7CFC00; font-size: 18px; }
+  button { font: inherit; font-size: 16px; padding: 4px 14px; border-radius: 6px; border: none; background: #eee; color: #222; cursor: pointer; margin: 0 6px; }
+  #term { padding: 0 20px 60px; white-space: pre; font-size: 14px; line-height: 1.35; overflow-x: auto; min-height: 60vh; }
+  #term input { background: transparent; border: none; outline: none; color: #f0f0f0; font: inherit; width: 8em; caret-color: #f0f0f0; }
+</style>
+</head>
+<body>
+<header>Click <button id="run">Run</button> to play the Higher Lower game.</header>
+<div id="term"></div>
+
+<script>
+// ---- Change these two lines for a new project ----
+const MAIN_FILE = 'main.py';
+const OTHER_FILES = ['art.py', 'game_data.py'];
+// ---------------------------------------------------
+
+const term = document.getElementById('term');
+const btn = document.getElementById('run');
+const decoder = new TextDecoder();
+let pyodide = null;
+let running = false;
+
+function write(text) {
+  term.appendChild(document.createTextNode(text));
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+// Called from Python whenever the game asks for input
+window.readLine = function () {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.autocapitalize = 'off'; inp.autocomplete = 'off'; inp.spellcheck = false;
+    term.appendChild(inp);
+    inp.focus();
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        const value = inp.value;
+        inp.replaceWith(document.createTextNode(value + '\n'));
+        resolve(value);
+      }
+    });
+  });
+};
+
+term.addEventListener('click', () => {
+  const inp = term.querySelector('input');
+  if (inp) inp.focus();
+});
+
+const PRELUDE = `
+import sys, js
+if '/home/pyodide' not in sys.path:
+    sys.path.insert(0, '/home/pyodide')
+for f in ${JSON.stringify(OTHER_FILES)}:
+    sys.modules.pop(f[:-3], None)
+
+async def __ainput__(prompt=""):
+    print(prompt, end="")
+    sys.stdout.flush()
+    return await js.readLine()
+`;
+
+async function getFile(name) {
+  const res = await fetch(name, { cache: 'no-store' });
+  if (!res.ok) throw new Error('Could not load ' + name);
+  return res.text();
+}
+
+async function run() {
+  if (running) { location.hash = 'run'; location.reload(); return; }
+  running = true;
+  term.textContent = '';
+  try {
+    if (!pyodide) {
+      write('Loading Python...\n');
+      pyodide = await loadPyodide();
+      const out = { write: buf => { write(decoder.decode(buf, { stream: true })); return buf.length; } };
+      pyodide.setStdout(out);
+      pyodide.setStderr(out);
+      term.textContent = '';
+    }
+    for (const f of OTHER_FILES) {
+      pyodide.FS.writeFile('/home/pyodide/' + f, await getFile(f));
+    }
+    // Browsers can't pause for input(), so swap it for an awaitable version
+    const main = (await getFile(MAIN_FILE)).replace(/\binput\(/g, 'await __ainput__(');
+    const scope = pyodide.globals.get('dict')();
+    await pyodide.runPythonAsync(PRELUDE, { globals: scope });
+    await pyodide.runPythonAsync(main, { globals: scope });
+    write('\nPress Run to play again.\n');
+  } catch (e) {
+    write('\n' + e.message + '\n');
+  }
+  running = false;
+}
+
+btn.addEventListener('click', run);
+if (location.hash === '#run') { history.replaceState(null, '', location.pathname); run(); }
+</script>
+</body>
+</html>
