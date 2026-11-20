@@ -67,6 +67,19 @@ async def __ainput__(prompt=""):
     print(prompt, end="")
     sys.stdout.flush()
     return await js.readLine()
+
+import ast
+class _InputSwap(ast.NodeTransformer):
+    def visit_Call(self, node):
+        self.generic_visit(node)
+        if isinstance(node.func, ast.Name) and node.func.id == 'input':
+            node.func.id = '__ainput__'
+            return ast.Await(value=node)
+        return node
+
+def __convert__(src):
+    tree = _InputSwap().visit(ast.parse(src))
+    return ast.unparse(ast.fix_missing_locations(tree))
 `;
 
 async function getFile(name) {
@@ -91,10 +104,10 @@ async function run() {
     for (const f of OTHER_FILES) {
       pyodide.FS.writeFile('/home/pyodide/' + f, await getFile(f));
     }
-    // Browsers can't pause for input(), so swap it for an awaitable version
-    const main = (await getFile(MAIN_FILE)).replace(/\binput\(/g, 'await __ainput__(');
     const scope = pyodide.globals.get('dict')();
     await pyodide.runPythonAsync(PRELUDE, { globals: scope });
+    // Browsers can't pause for input(), so swap it for an awaitable version
+    const main = scope.get('__convert__')(await getFile(MAIN_FILE));
     await pyodide.runPythonAsync(main, { globals: scope });
     write('\nPress Run to play again.\n');
   } catch (e) {
